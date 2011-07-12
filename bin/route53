@@ -3,6 +3,10 @@
 #
 # route53 is similar to sdbadmin for Route53, it's a simple
 # console utility to perform the most frequent tasks with Route53
+import logging
+
+logging.basicConfig(level =logging.DEBUG)
+log = logging.getLogger()
 
 def _print_zone_info(zoneinfo):
     print "="*80
@@ -13,6 +17,14 @@ def _print_zone_info(zoneinfo):
     print zoneinfo['Config']
     print
     
+
+def _filter_rrsets(conn, hosted_zone_id, type, name):
+    response = conn.get_all_rrsets(hosted_zone_id, type, name, maxitems=1)[0]
+    # There is a bug i'd say in get_all_rrsets in that it does not filter properly by type/name
+    # so i filter *again* explicitely.
+    if response.type == type and response.name == name and len(response.resource_records) > 0:
+        return response
+    return None
 
 def create(conn, hostname, caller_reference=None, comment=''):
     """Create a hosted zone, returning the nameservers"""
@@ -83,11 +95,30 @@ def change_record(conn, hosted_zone_id, name, type, values, ttl=600, comment="")
     """Delete and then add a record to a zone"""
     from boto.route53.record import ResourceRecordSets
     changes = ResourceRecordSets(conn, hosted_zone_id, comment)
-    response = conn.get_all_rrsets(hosted_zone_id, type, name, maxitems=1)[0]
-    change1 = changes.add_change("DELETE", name, type, response.ttl)
-    for old_value in response.resource_records:
-        change1.add_value(old_value)
+    response = _filter_rrsets(conn, hosted_zone_id, type, name)
+    if response and len(response.resource_records) > 0:
+        change1 = changes.add_change("DELETE", name, type, response.ttl)
+        for old_value in response.resource_records:
+            change1.add_value(old_value)
     change2 = changes.add_change("CREATE", name, type, ttl)
+    for new_value in values.split(','):
+        change2.add_value(new_value)
+    print changes.commit()
+
+def append_record(conn, hosted_zone_id, name, type, values, ttl=600, comment=""):
+    """Append a record to a zone - read/save all records, delete them and add them again as well as the new record"""
+    from boto.route53.record import ResourceRecordSets
+    changes = ResourceRecordSets(conn, hosted_zone_id, comment)
+    response = _filter_rrsets(conn, hosted_zone_id, type, name)
+    if response and len(response.resource_records) > 0:
+        change1 = changes.add_change("DELETE", name, type, response.ttl)
+        for old_value in response.resource_records:
+            change1.add_value(old_value)
+    change2 = changes.add_change("CREATE", name, type, ttl)
+    # Re-add the resource records
+    if response and len(response.resource_records) > 0:
+        for old_value in response.resource_records:
+            change2.add_value(old_value)
     for new_value in values.split(','):
         change2.add_value(new_value)
     print changes.commit()
