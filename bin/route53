@@ -3,10 +3,12 @@
 #
 # route53 is similar to sdbadmin for Route53, it's a simple
 # console utility to perform the most frequent tasks with Route53
-import logging
 
-logging.basicConfig(level =logging.DEBUG)
-log = logging.getLogger()
+# To enable log debugging level
+# import logging
+# 
+# logging.basicConfig(level =logging.DEBUG)
+# log = logging.getLogger()
 
 def _print_zone_info(zoneinfo):
     print "="*80
