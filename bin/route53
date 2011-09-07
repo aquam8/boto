@@ -114,17 +114,23 @@ def append_record(conn, hosted_zone_id, name, type, values, ttl=600, comment="")
     from boto.route53.record import ResourceRecordSets
     changes = ResourceRecordSets(conn, hosted_zone_id, comment)
     response = _filter_rrsets(conn, hosted_zone_id, type, name)
+    # If we already have records, we handle those too.
     if response and len(response.resource_records) > 0:
-        change1 = changes.add_change("DELETE", name, type, response.ttl)
+        del_changes = changes.add_change("DELETE", name, type, response.ttl)
         for old_value in response.resource_records:
-            change1.add_value(old_value)
-    change2 = changes.add_change("CREATE", name, type, ttl)
+            del_changes.add_value(old_value)
+
     # Re-add the resource records
+    add_changes = changes.add_change("CREATE", name, type, ttl)
     if response and len(response.resource_records) > 0:
         for old_value in response.resource_records:
-            change2.add_value(old_value)
+            add_changes.add_value(old_value)
+    
     for new_value in values.split(','):
-        change2.add_value(new_value)
+        if response and len(response.resource_records) > 0 and (new_value in response.resource_records):
+            print ("Skipping record %s as it already exist" % new_value)
+            continue
+        add_changes.add_value(new_value)     # Add new only if it does not already exist
     print changes.commit()
 
 def remove_record(conn, hosted_zone_id, name, type, values, ttl=600, comment=""):
@@ -133,17 +139,21 @@ def remove_record(conn, hosted_zone_id, name, type, values, ttl=600, comment="")
     changes = ResourceRecordSets(conn, hosted_zone_id, comment)
     response = _filter_rrsets(conn, hosted_zone_id, type, name)
     if response and len(response.resource_records) > 0:
+        values_to_remove = values.split(',')
+        if len( set(values_to_remove) & set(response.resource_records) ) == 0:
+            print "Records not found in this zone"
+            return
+        
         change1 = changes.add_change("DELETE", name, type, response.ttl)
         for old_value in response.resource_records:
             change1.add_value(old_value)
-    change2 = changes.add_change("CREATE", name, type, ttl)
-    # Re-add the resource records
-    if response and len(response.resource_records) > 0:
-        values_to_remove = values.split(',')
+        
+        # Re-add the resource records
+        change2 = changes.add_change("CREATE", name, type, ttl)
         for old_value in response.resource_records:
             if old_value not in values_to_remove:
                 change2.add_value(old_value)
-    print changes.commit()
+        print changes.commit()
 
 def help(conn, fnc=None):
     """Prints this help message"""
