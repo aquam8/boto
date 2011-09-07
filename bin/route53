@@ -127,6 +127,24 @@ def append_record(conn, hosted_zone_id, name, type, values, ttl=600, comment="")
         change2.add_value(new_value)
     print changes.commit()
 
+def remove_record(conn, hosted_zone_id, name, type, values, ttl=600, comment=""):
+    """Remove a record from a zone - read/save all records, delete them and add them again except the record that was passed as parameter"""
+    from boto.route53.record import ResourceRecordSets
+    changes = ResourceRecordSets(conn, hosted_zone_id, comment)
+    response = _filter_rrsets(conn, hosted_zone_id, type, name)
+    if response and len(response.resource_records) > 0:
+        change1 = changes.add_change("DELETE", name, type, response.ttl)
+        for old_value in response.resource_records:
+            change1.add_value(old_value)
+    change2 = changes.add_change("CREATE", name, type, ttl)
+    # Re-add the resource records
+    if response and len(response.resource_records) > 0:
+        values_to_remove = values.split(',')
+        for old_value in response.resource_records:
+            if old_value not in values_to_remove:
+                change2.add_value(old_value)
+    print changes.commit()
+
 def help(conn, fnc=None):
     """Prints this help message"""
     import inspect
