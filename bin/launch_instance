@@ -45,6 +45,7 @@ if __name__ == "__main__":
     parser.add_option("-a", "--ami", help="AMI to launch", dest="ami_id")
     parser.add_option("-t", "--type", help="Type of Instance (default m1.small)", dest="type", default="m1.small")
     parser.add_option("-k", "--key", help="Keypair", dest="key_name")
+    parser.add_option("-m", "--monitoring_enabled", help="Enable Cloudwatch on this instance", dest="monitoring_enabled", default=False, action="store_true")
     parser.add_option("-z", "--zone", help="Zone (default us-east-1a)", dest="zone", default="us-east-1a")
     parser.add_option("-r", "--region", help="Region (default us-east-1)", dest="region", default="us-east-1")
     parser.add_option("-i", "--ip", action="store_true", help="Elastic IP", dest="elastic_ip")
@@ -111,7 +112,8 @@ if __name__ == "__main__":
     r = ami.run(min_count=int(options.min_count), max_count=int(options.max_count),
             key_name=key_name, user_data=user_data,
             security_groups=groups, instance_type=options.type,
-            placement=options.zone, instance_initiated_shutdown_behavior=shutdown_proc)
+            placement=options.zone, instance_initiated_shutdown_behavior=shutdown_proc,
+            monitoring_enabled=options.monitoring_enabled)
 
     login_lines = []
     for instance in r.instances:
