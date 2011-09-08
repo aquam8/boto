@@ -109,19 +109,21 @@ def change_record(conn, hosted_zone_id, name, type, values, ttl=600, comment="")
         change2.add_value(new_value)
     print changes.commit()
 
-def append_record(conn, hosted_zone_id, name, type, values, ttl=600, comment=""):
-    """Append a record to a zone - read/save all records, delete them and add them again as well as the new record"""
+def append_record(conn, hosted_zone_id, name, type, values, ttl=600):
+    """Append a record to a zone - read/save all records, delete them and add them again as well as the new record. ttl can be set when called for the first time"""
     from boto.route53.record import ResourceRecordSets
-    changes = ResourceRecordSets(conn, hosted_zone_id, comment)
+    changes = ResourceRecordSets(conn, hosted_zone_id)
     response = _filter_rrsets(conn, hosted_zone_id, type, name)
+    ttl_to_set = ttl   # Set ttl (if it has not already been set)
     # If we already have records, we handle those too.
     if response and len(response.resource_records) > 0:
         del_changes = changes.add_change("DELETE", name, type, response.ttl)
         for old_value in response.resource_records:
             del_changes.add_value(old_value)
-
+        ttl_to_set = response.ttl    # re-set the initial ttl
+    
     # Re-add the resource records
-    add_changes = changes.add_change("CREATE", name, type, ttl)
+    add_changes = changes.add_change("CREATE", name, type, ttl_to_set)
     if response and len(response.resource_records) > 0:
         for old_value in response.resource_records:
             add_changes.add_value(old_value)
@@ -133,10 +135,10 @@ def append_record(conn, hosted_zone_id, name, type, values, ttl=600, comment="")
         add_changes.add_value(new_value)     # Add new only if it does not already exist
     print changes.commit()
 
-def remove_record(conn, hosted_zone_id, name, type, values, ttl=600, comment=""):
-    """Remove a record from a zone - read/save all records, delete them and add them again except the record that was passed as parameter"""
+def remove_record(conn, hosted_zone_id, name, type, values):
+    """Remove a record from a zone - read/save all records, delete them and add them again except the record that was passed as parameter. Removing the last record will remove the host entry altogether."""
     from boto.route53.record import ResourceRecordSets
-    changes = ResourceRecordSets(conn, hosted_zone_id, comment)
+    changes = ResourceRecordSets(conn, hosted_zone_id)
     response = _filter_rrsets(conn, hosted_zone_id, type, name)
     if response and len(response.resource_records) > 0:
         values_to_remove = values.split(',')
@@ -148,11 +150,12 @@ def remove_record(conn, hosted_zone_id, name, type, values, ttl=600, comment="")
         for old_value in response.resource_records:
             change1.add_value(old_value)
         
-        # Re-add the resource records
-        change2 = changes.add_change("CREATE", name, type, ttl)
-        for old_value in response.resource_records:
-            if old_value not in values_to_remove:
-                change2.add_value(old_value)
+        # Re-add the resource records (if there are still so resource to be re-added)
+        if len( set(response.resource_records) - set(values_to_remove) ) > 0:
+            change2 = changes.add_change("CREATE", name, type, response.ttl)
+            for old_value in response.resource_records:
+                if old_value not in values_to_remove:
+                    change2.add_value(old_value)
         print changes.commit()
 
 def help(conn, fnc=None):
