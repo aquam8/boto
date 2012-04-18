@@ -36,7 +36,7 @@ from boto.ec2.instance import Reservation, Instance
 from boto.ec2.instance import ConsoleOutput, InstanceAttribute
 from boto.ec2.keypair import KeyPair
 from boto.ec2.address import Address
-from boto.ec2.volume import Volume
+from boto.ec2.volume import Volume, VolumeAttribute
 from boto.ec2.snapshot import Snapshot
 from boto.ec2.snapshot import SnapshotAttribute
 from boto.ec2.zone import Zone
@@ -52,6 +52,7 @@ from boto.ec2.bundleinstance import BundleInstanceTask
 from boto.ec2.placementgroup import PlacementGroup
 from boto.ec2.tag import Tag
 from boto.ec2.instancestatus import InstanceStatusSet
+from boto.ec2.volumestatus import VolumeStatusSet
 from boto.ec2.networkinterface import NetworkInterface
 from boto.exception import EC2ResponseError
 
@@ -59,7 +60,7 @@ from boto.exception import EC2ResponseError
 
 class EC2Connection(AWSQueryConnection):
 
-    APIVersion = boto.config.get('Boto', 'ec2_version', '2011-12-15')
+    APIVersion = boto.config.get('Boto', 'ec2_version', '2012-03-01')
     DefaultRegionName = boto.config.get('Boto', 'ec2_region_name', 'us-east-1')
     DefaultRegionEndpoint = boto.config.get('Boto', 'ec2_region_endpoint',
                                             'ec2.us-east-1.amazonaws.com')
@@ -464,7 +465,7 @@ class EC2Connection(AWSQueryConnection):
             self.build_filter_params(params, filters)
         return self.get_list('DescribeInstances', params,
                              [('item', Reservation)], verb='POST')
-    
+
     def get_all_instance_status(self, instance_ids=None,
                                 max_results=None, next_token=None,
                                 filters=None):
@@ -930,6 +931,7 @@ class EC2Connection(AWSQueryConnection):
                                instance_type='m1.small', placement=None,
                                kernel_id=None, ramdisk_id=None,
                                monitoring_enabled=False, subnet_id=None,
+                               placement_group=None,
                                block_device_map=None):
         """
         Request instances on the spot market at a particular price.
@@ -1004,6 +1006,10 @@ class EC2Connection(AWSQueryConnection):
         :param subnet_id: The subnet ID within which to launch the instances
                           for VPC.
 
+        :type placement_group: string
+        :param placement_group: If specified, this is the name of the placement
+                                group in which the instance(s) will be launched.
+
         :type block_device_map: :class:`boto.ec2.blockdevicemapping.BlockDeviceMapping`
         :param block_device_map: A BlockDeviceMapping data structure
                                  describing the EBS volumes associated
@@ -1053,12 +1059,13 @@ class EC2Connection(AWSQueryConnection):
             params['LaunchSpecification.Monitoring.Enabled'] = 'true'
         if subnet_id:
             params['LaunchSpecification.SubnetId'] = subnet_id
+        if placement_group:
+            params['LaunchSpecification.Placement.GroupName'] = placement_group
         if block_device_map:
             block_device_map.build_list_params(params, 'LaunchSpecification.')
         return self.get_list('RequestSpotInstances', params,
                              [('item', SpotInstanceRequest)],
                              verb='POST')
-
 
     def cancel_spot_instance_requests(self, request_ids):
         """
@@ -1307,6 +1314,101 @@ class EC2Connection(AWSQueryConnection):
             self.build_filter_params(params, filters)
         return self.get_list('DescribeVolumes', params,
                              [('item', Volume)], verb='POST')
+
+    def get_all_volume_status(self, volume_ids=None,
+                              max_results=None, next_token=None,
+                              filters=None):
+        """
+        Retrieve the status of one or more volumes.
+
+        :type volume_ids: list
+        :param volume_ids: A list of strings of volume IDs
+
+        :type max_results: int
+        :param max_results: The maximum number of paginated instance
+            items per response.
+
+        :type next_token: str
+        :param next_token: A string specifying the next paginated set
+            of results to return.
+
+        :type filters: dict
+        :param filters: Optional filters that can be used to limit
+            the results returned.  Filters are provided
+            in the form of a dictionary consisting of
+            filter names as the key and filter values
+            as the value.  The set of allowable filter
+            names/values is dependent on the request
+            being performed.  Check the EC2 API guide
+            for details.
+
+        :rtype: list
+        :return: A list of volume status.
+        """
+        params = {}
+        if volume_ids:
+            self.build_list_params(params, volume_ids, 'VolumeId')
+        if max_results:
+            params['MaxResults'] = max_results
+        if next_token:
+            params['NextToken'] = next_token
+        if filters:
+            self.build_filter_params(params, filters)
+        return self.get_object('DescribeVolumeStatus', params,
+                               VolumeStatusSet, verb='POST')
+
+    def enable_volume_io(self, volume_id):
+        """
+        Enables I/O operations for a volume that had I/O operations
+        disabled because the data on the volume was potentially inconsistent.
+
+        :type volume_id: str
+        :param volume_id: The ID of the volume.
+
+        :rtype: bool
+        :return: True if successful
+        """
+        params = {'VolumeId': volume_id}
+        return self.get_status('EnableVolumeIO', params, verb='POST')
+
+    def get_volume_attribute(self, volume_id,
+                             attribute='autoEnableIO'):
+        """
+        Describes attribute of the volume.
+
+        :type volume_id: str
+        :param volume_id: The ID of the volume.
+
+        :type attribute: str
+        :param attribute: The requested attribute.  Valid values are:
+
+            * autoEnableIO
+
+        :rtype: list of :class:`boto.ec2.volume.VolumeAttribute`
+        :return: The requested Volume attribute
+        """
+        params = {'VolumeId': volume_id, 'Attribute' : attribute}
+        return self.get_object('DescribeVolumeAttribute', params,
+                               VolumeAttribute, verb='POST')
+
+    def modify_volume_attribute(self, volume_id, attribute, new_value):
+        """
+        Changes an attribute of an Volume.
+
+        :type volume_id: string
+        :param volume_id: The volume id you wish to change
+
+        :type attribute: string
+        :param attribute: The attribute you wish to change.  Valid values are:
+            AutoEnableIO.
+
+        :type new_value: string
+        :param new_value: The new value of the attribute.
+        """
+        params = {'VolumeId': volume_id}
+        if attribute == 'AutoEnableIO':
+            params['AutoEnableIO.Value'] = new_value
+        return self.get_status('ModifyVolumeAttribute', params, verb='POST')
 
     def create_volume(self, size, zone, snapshot=None):
         """
@@ -2004,7 +2106,7 @@ class EC2Connection(AWSQueryConnection):
         :type to_port: int
         :param to_port: The ending port number you are enabling
 
-        :type cidr_ip: string
+        :type cidr_ip: string or list of strings
         :param cidr_ip: The CIDR block you are providing access to.
                         See http://goo.gl/Yj5QC
 
@@ -2051,7 +2153,11 @@ class EC2Connection(AWSQueryConnection):
         if to_port is not None:
             params['IpPermissions.1.ToPort'] = to_port
         if cidr_ip:
-            params['IpPermissions.1.IpRanges.1.CidrIp'] = cidr_ip
+            if type(cidr_ip) != list:
+                cidr_ip = [cidr_ip]
+            for i, single_cidr_ip in enumerate(cidr_ip):
+                params['IpPermissions.1.IpRanges.%d.CidrIp' % (i+1)] = \
+                    single_cidr_ip
 
         return self.get_status('AuthorizeSecurityGroupIngress',
                                params, verb='POST')
@@ -2240,7 +2346,7 @@ class EC2Connection(AWSQueryConnection):
         Remove an existing egress rule from an existing VPC security group.
         You need to pass in an ip_protocol, from_port and to_port range only
         if the protocol you are using is port-based. You also need to pass in either
-        a src_group_id or cidr_ip. 
+        a src_group_id or cidr_ip.
 
         :type group_name: string
         :param group_id:  The name of the security group you are removing
@@ -2265,7 +2371,7 @@ class EC2Connection(AWSQueryConnection):
         :rtype: bool
         :return: True if successful.
         """
-       
+
         params = {}
         if group_id:
             params['GroupId'] = group_id
@@ -2841,4 +2947,3 @@ class EC2Connection(AWSQueryConnection):
         """
         params = {'NetworkInterfaceId' : network_interface_id}
         return self.get_status('DeleteNetworkInterface', params, verb='POST')
-

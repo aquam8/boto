@@ -71,11 +71,11 @@ class Table(object):
     
     @property
     def item_count(self):
-        return self._dict['ItemCount']
+        return self._dict.get('ItemCount', 0)
     
     @property
     def size_bytes(self):
-        return self._dict['TableSizeBytes']
+        return self._dict.get('TableSizeBytes', 0)
     
     @property
     def schema(self):
@@ -221,11 +221,36 @@ class Table(object):
             return False
         return True
 
-    def new_item(self, hash_key, range_key=None, attrs=None,
+    def new_item(self, hash_key=None, range_key=None, attrs=None,
                  item_class=Item):
         """
         Return an new, unsaved Item which can later be PUT to
         Amazon DynamoDB.
+
+        This method has explicit (but optional) parameters for
+        the hash_key and range_key values of the item.  You can use
+        these explicit parameters when calling the method, such as::
+
+            >>> my_item = my_table.new_item(hash_key='a', range_key=1, attrs={'key1': 'val1', 'key2': 'val2'})
+            >>> my_item
+            {u'bar': 1, u'foo': 'a', 'key1': 'val1', 'key2': 'val2'}
+
+        Or, if you prefer, you can simply put the hash_key and range_key
+        in the attrs dictionary itself, like this::
+
+            >>> attrs = {'foo': 'a', 'bar': 1, 'key1': 'val1', 'key2': 'val2'}
+            >>> my_item = my_table.new_item(attrs=attrs)
+            >>> my_item
+            {u'bar': 1, u'foo': 'a', 'key1': 'val1', 'key2': 'val2'}
+
+        The effect is the same.
+
+        .. note:
+           The explicit parameters take priority over the values in
+           the attrs dict.  So, if you have a hash_key or range_key
+           in the attrs dict and you also supply either or both using
+           the explicit parameters, the values in the attrs will be
+           ignored.
 
         :type hash_key: int|long|float|str|unicode
         :param hash_key: The HashKey of the new item.  The
@@ -265,7 +290,7 @@ class Table(object):
         :type range_key_condition: dict
         :param range_key_condition: A dict where the key is either
             a scalar value appropriate for the RangeKey in the schema
-            of the database or a tuple of such values.  The value 
+            of the database or a tuple of such values.  The value
             associated with this key in the dict will be one of the
             following conditions:
 
@@ -387,5 +412,5 @@ class Table(object):
         :rtype: generator
         """
         return self.layer2.scan(self, scan_filter, attributes_to_get,
-                                request_limit, max_results,
+                                request_limit, max_results, count,
                                 exclusive_start_key, item_class=item_class)

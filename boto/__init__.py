@@ -1,6 +1,7 @@
-# Copyright (c) 2006-2011 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006-2012 Mitch Garnaat http://garnaat.org/
 # Copyright (c) 2010-2011, Eucalyptus Systems, Inc.
 # Copyright (c) 2011, Nexenta Systems Inc.
+# Copyright (c) 2012 Amazon.com, Inc. or its affiliates.
 # All rights reserved.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
@@ -31,7 +32,7 @@ import logging.config
 import urlparse
 from boto.exception import InvalidUriError
 
-__version__ = '2.2.2-dev'
+__version__ = '2.3.0'
 Version = __version__ # for backware compatibility
 
 UserAgent = 'Boto/%s (%s)' % (__version__, sys.platform)
@@ -517,6 +518,22 @@ def connect_dynamodb(aws_access_key_id=None,
     """
     from boto.dynamodb.layer2 import Layer2
     return Layer2(aws_access_key_id, aws_secret_access_key, **kwargs)
+
+def connect_swf(aws_access_key_id=None,
+                aws_secret_access_key=None,
+                **kwargs):
+    """
+    :type aws_access_key_id: string
+    :param aws_access_key_id: Your AWS Access Key ID
+
+    :type aws_secret_access_key: string
+    :param aws_secret_access_key: Your AWS Secret Access Key
+
+    :rtype: :class:`boto.swf.layer1.Layer1`
+    :return: A connection to the Layer1 interface for SWF.
+    """
+    from boto.swf.layer1 import Layer1
+    return Layer1(aws_access_key_id, aws_secret_access_key, **kwargs)
 
 def check_extensions(module_name, module_path):
     """

@@ -1,5 +1,6 @@
-# Copyright (c) 2011 Mitch Garnaat http://garnaat.org/
-# Copyright (c) 2011 Amazon.com, Inc. or its affiliates.  All Rights Reserved
+# Copyright (c) 2012 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2012 Amazon.com, Inc. or its affiliates.
+# All Rights Reserved
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -22,24 +23,19 @@
 #
 
 from boto.ec2.regioninfo import RegionInfo
+import boto.swf.layer1
 
 def regions():
     """
-    Get all available regions for the Amazon DynamoDB service.
+    Get all available regions for the Amazon Simple Workflow service.
         
     :rtype: list
     :return: A list of :class:`boto.regioninfo.RegionInfo`
     """
     import boto.dynamodb.layer2
     return [RegionInfo(name='us-east-1',
-                       endpoint='dynamodb.us-east-1.amazonaws.com',
-                       connection_cls=boto.dynamodb.layer2.Layer2),
-            RegionInfo(name='ap-northeast-1',
-                       endpoint='dynamodb.ap-northeast-1.amazonaws.com',
-                       connection_cls=boto.dynamodb.layer2.Layer2),
-            RegionInfo(name='eu-west-1',
-                       endpoint='dynamodb.eu-west-1.amazonaws.com',
-                       connection_cls=boto.dynamodb.layer2.Layer2),
+                       endpoint='swf.us-east-1.amazonaws.com',
+                       connection_cls=boto.swf.layer1.Layer1),
             ]
 
 def connect_to_region(region_name, **kw_params):
