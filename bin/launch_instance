@@ -150,10 +150,11 @@ if __name__ == "__main__":
             try:
                 elastic_ip = available_elastic_ips.pop()
             except IndexError:
-                elastic_ip = ec2.allocate_address()
+                elastic_ip = ec2.allocate_address().public_ip
                 print "Allocating new Elastic IP address: %s" % elastic_ip
             if instance.use_ip(elastic_ip):
                 print "Associated Elastic IP address: %s with instance %s" % (elastic_ip, instance.id)
-              
+                login_lines.append("ssh -i ~/.ssh/%s.pem root@%s" % (options.key_name, elastic_ip))
+
     for login_line in login_lines:
         print login_line
