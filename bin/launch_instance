@@ -80,13 +80,12 @@ if __name__ == "__main__":
         l = [(k, k.name, '') for k in ec2.get_all_key_pairs()]
         key_name = iobj.choose_from_list(l, prompt='Choose Keypair').name
 
-    available_elastic_ips = []
-    if options.elastic_ip:
-        for a in ec2.get_all_addresses(): 
-            if a.instance_id is "":
-                available_elastic_ips.append(a.public_ip)
-
-    print "Preallocated Elastic_ips" , available_elastic_ips
+    #available_elastic_ips = []
+    #if options.elastic_ip:
+    #    for a in ec2.get_all_addresses(): 
+    #        if a.instance_id is "":
+    #            available_elastic_ips.append(a.public_ip)
+    #print "Preallocated Elastic_ips" , available_elastic_ips
 
 
     if options.groups:
@@ -147,14 +146,21 @@ if __name__ == "__main__":
                 instance.add_tag(name, value)
         
         if options.elastic_ip:
-            try:
-                elastic_ip = available_elastic_ips.pop()
-            except IndexError:
-                elastic_ip = ec2.allocate_address().public_ip
-                print "Allocating new Elastic IP address: %s" % elastic_ip
+            #try:
+            #    elastic_ip = available_elastic_ips.pop()
+            #except IndexError:
+            #    elastic_ip = ec2.allocate_address().public_ip
+            #    print "Allocating new Elastic IP address: %s" % elastic_ip
+            # instead allocate always
+            elastic_ip = ec2.allocate_address().public_ip
+            print "Allocating new Elastic IP address: %s" % elastic_ip
             if instance.use_ip(elastic_ip):
                 print "Associated Elastic IP address: %s with instance %s" % (elastic_ip, instance.id)
                 login_lines.append("ssh -i ~/.ssh/%s.pem root@%s" % (options.key_name, elastic_ip))
 
     for login_line in login_lines:
         print login_line
+    
+    print ""
+    
+    
