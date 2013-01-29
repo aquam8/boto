@@ -19,17 +19,13 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-try:
-    import simplejson as json
-except:
-    import json
-
 import boto
 from boto.cloudformation.stack import Stack, StackSummary, StackEvent
 from boto.cloudformation.stack import StackResource, StackResourceSummary
 from boto.cloudformation.template import Template
 from boto.connection import AWSQueryConnection
 from boto.regioninfo import RegionInfo
+from boto.compat import json
 
 
 class CloudFormationConnection(AWSQueryConnection):
@@ -42,15 +38,21 @@ class CloudFormationConnection(AWSQueryConnection):
     DefaultRegionEndpoint = boto.config.get('Boto', 'cfn_region_endpoint',
                                             'cloudformation.us-east-1.amazonaws.com')
 
-    valid_states = ("CREATE_IN_PROGRESS", "CREATE_FAILED", "CREATE_COMPLETE",
-            "ROLLBACK_IN_PROGRESS", "ROLLBACK_FAILED", "ROLLBACK_COMPLETE",
-            "DELETE_IN_PROGRESS", "DELETE_FAILED", "DELETE_COMPLETE")
+    valid_states = (
+        'CREATE_IN_PROGRESS', 'CREATE_FAILED', 'CREATE_COMPLETE',
+        'ROLLBACK_IN_PROGRESS', 'ROLLBACK_FAILED', 'ROLLBACK_COMPLETE',
+        'DELETE_IN_PROGRESS', 'DELETE_FAILED', 'DELETE_COMPLETE',
+        'UPDATE_IN_PROGRESS', 'UPDATE_COMPLETE_CLEANUP_IN_PROGRESS',
+        'UPDATE_COMPLETE', 'UPDATE_ROLLBACK_IN_PROGRESS',
+        'UPDATE_ROLLBACK_FAILED',
+        'UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS',
+        'UPDATE_ROLLBACK_COMPLETE')
 
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
                  is_secure=True, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, debug=0,
                  https_connection_factory=None, region=None, path='/',
-                 converter=None, security_token=None):
+                 converter=None, security_token=None, validate_certs=True):
         if not region:
             region = RegionInfo(self, self.DefaultRegionName,
                 self.DefaultRegionEndpoint, CloudFormationConnection)
@@ -61,10 +63,11 @@ class CloudFormationConnection(AWSQueryConnection):
                                     proxy_user, proxy_pass,
                                     self.region.endpoint, debug,
                                     https_connection_factory, path,
-                                    security_token)
+                                    security_token,
+                                    validate_certs=validate_certs)
 
     def _required_auth_capability(self):
-        return ['cloudformation']
+        return ['hmac-v4']
 
     def encode_bool(self, v):
         v = bool(v)
@@ -73,7 +76,7 @@ class CloudFormationConnection(AWSQueryConnection):
     def _build_create_or_update_params(self, stack_name, template_body,
                                        template_url, parameters,
                                        notification_arns, disable_rollback,
-                                       timeout_in_minutes, capabilities):
+                                       timeout_in_minutes, capabilities, tags):
         """
         Helper that creates JSON parameters needed by a Stack Create or
         Stack Update call.
@@ -112,6 +115,10 @@ class CloudFormationConnection(AWSQueryConnection):
             the stack.  Currently, the only valid capability is
             'CAPABILITY_IAM'.
 
+        :type tags: dict
+        :param tags: A dictionary of (key, value) pairs of tags to
+            associate with this stack.
+
         :rtype: dict
         :return: JSON parameters represented as a Python dict.
         """
@@ -126,11 +133,15 @@ class CloudFormationConnection(AWSQueryConnection):
                 " specified, only TemplateBody will be honored by the API")
         if len(parameters) > 0:
             for i, (key, value) in enumerate(parameters):
-                params['Parameters.member.%d.ParameterKey' % (i+1)] = key
-                params['Parameters.member.%d.ParameterValue' % (i+1)] = value
+                params['Parameters.member.%d.ParameterKey' % (i + 1)] = key
+                params['Parameters.member.%d.ParameterValue' % (i + 1)] = value
         if capabilities:
             for i, value in enumerate(capabilities):
-                params['Capabilities.member.%d' % (i+1)] = value
+                params['Capabilities.member.%d' % (i + 1)] = value
+        if tags:
+            for i, (key, value) in enumerate(tags.items()):
+                params['Tags.member.%d.Key' % (i + 1)] = key
+                params['Tags.member.%d.Value' % (i + 1)] = value
         if len(notification_arns) > 0:
             self.build_list_params(params, notification_arns,
                                    "NotificationARNs.member")
@@ -140,7 +151,7 @@ class CloudFormationConnection(AWSQueryConnection):
 
     def create_stack(self, stack_name, template_body=None, template_url=None,
             parameters=[], notification_arns=[], disable_rollback=False,
-            timeout_in_minutes=None, capabilities=None):
+            timeout_in_minutes=None, capabilities=None, tags=None):
         """
         Creates a CloudFormation Stack as specified by the template.
 
@@ -178,12 +189,16 @@ class CloudFormationConnection(AWSQueryConnection):
             the stack.  Currently, the only valid capability is
             'CAPABILITY_IAM'.
 
+        :type tags: dict
+        :param tags: A dictionary of (key, value) pairs of tags to
+            associate with this stack.
+
         :rtype: string
         :return: The unique Stack ID.
         """
         params = self._build_create_or_update_params(stack_name,
             template_body, template_url, parameters, notification_arns,
-            disable_rollback, timeout_in_minutes, capabilities)
+            disable_rollback, timeout_in_minutes, capabilities, tags)
         response = self.make_request('CreateStack', params, '/', 'POST')
         body = response.read()
         if response.status == 200:
@@ -196,7 +211,7 @@ class CloudFormationConnection(AWSQueryConnection):
 
     def update_stack(self, stack_name, template_body=None, template_url=None,
             parameters=[], notification_arns=[], disable_rollback=False,
-            timeout_in_minutes=None, capabilities=None):
+            timeout_in_minutes=None, capabilities=None, tags=None):
         """
         Updates a CloudFormation Stack as specified by the template.
 
@@ -234,12 +249,16 @@ class CloudFormationConnection(AWSQueryConnection):
             the stack.  Currently, the only valid capability is
             'CAPABILITY_IAM'.
 
+        :type tags: dict
+        :param tags: A dictionary of (key, value) pairs of tags to
+            associate with this stack.
+
         :rtype: string
         :return: The unique Stack ID.
         """
         params = self._build_create_or_update_params(stack_name,
             template_body, template_url, parameters, notification_arns,
-            disable_rollback, timeout_in_minutes, capabilities)
+            disable_rollback, timeout_in_minutes, capabilities, tags)
         response = self.make_request('UpdateStack', params, '/', 'POST')
         body = response.read()
         if response.status == 200:
@@ -337,7 +356,7 @@ class CloudFormationConnection(AWSQueryConnection):
         if template_body:
             params['TemplateBody'] = template_body
         if template_url:
-            params['TemplateUrl'] = template_url
+            params['TemplateURL'] = template_url
         if template_body and template_url:
             boto.log.warning("If both TemplateBody and TemplateURL are"
                 " specified, only TemplateBody will be honored by the API")

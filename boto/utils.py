@@ -52,11 +52,12 @@ import boto.provider
 import tempfile
 import smtplib
 import datetime
-from email.MIMEMultipart import MIMEMultipart
-from email.MIMEBase import MIMEBase
-from email.MIMEText import MIMEText
-from email.Utils import formatdate
-from email import Encoders
+import re
+import email.mime.multipart
+import email.mime.base
+import email.mime.text
+import email.utils
+import email.encoders
 import gzip
 import base64
 try:
@@ -72,10 +73,7 @@ except ImportError:
     import md5
     _hashfn = md5.md5
 
-try:
-    import simplejson as json
-except:
-    import json
+from boto.compat import json
 
 # List of Query String Arguments of Interest
 qsa_of_interest = ['acl', 'cors', 'defaultObjectAcl', 'location', 'logging',
@@ -84,7 +82,19 @@ qsa_of_interest = ['acl', 'cors', 'defaultObjectAcl', 'location', 'logging',
                    'uploads', 'uploadId', 'response-content-type',
                    'response-content-language', 'response-expires',
                    'response-cache-control', 'response-content-disposition',
-                   'response-content-encoding', 'delete', 'lifecycle']
+                   'response-content-encoding', 'delete', 'lifecycle',
+                   'tagging', 'restore',
+                   # storageClass is a QSA for buckets in Google Cloud Storage.
+                   # (StorageClass is associated to individual keys in S3, but
+                   # having it listed here should cause no problems because
+                   # GET bucket?storageClass is not part of the S3 API.)
+                   'storageClass']
+
+
+_first_cap_regex = re.compile('(.)([A-Z][a-z]+)')
+_number_cap_regex = re.compile('([a-z])([0-9]+)')
+_end_cap_regex = re.compile('([a-z0-9])([A-Z])')
+
 
 def unquote_v(nv):
     if len(nv) == 1:
@@ -92,9 +102,12 @@ def unquote_v(nv):
     else:
         return (nv[0], urllib.unquote(nv[1]))
 
-# generates the aws canonical string for the given parameters
+
 def canonical_string(method, path, headers, expires=None,
                      provider=None):
+    """
+    Generates the aws canonical string for the given parameters
+    """
     if not provider:
         provider = boto.provider.get_default()
     interesting_headers = {}
@@ -102,7 +115,7 @@ def canonical_string(method, path, headers, expires=None,
         lk = key.lower()
         if headers[key] != None and (lk in ['content-md5', 'content-type', 'date'] or
                                      lk.startswith(provider.header_prefix)):
-            interesting_headers[lk] = headers[key].strip()
+            interesting_headers[lk] = str(headers[key]).strip()
 
     # these keys get empty strings if they don't exist
     if 'content-type' not in interesting_headers:
@@ -146,6 +159,7 @@ def canonical_string(method, path, headers, expires=None,
 
     return buf
 
+
 def merge_meta(headers, metadata, provider=None):
     if not provider:
         provider = boto.provider.get_default()
@@ -160,6 +174,7 @@ def merge_meta(headers, metadata, provider=None):
             final_headers[metadata_prefix + k] = metadata[k]
 
     return final_headers
+
 
 def get_aws_metadata(headers, provider=None):
     if not provider:
@@ -176,10 +191,21 @@ def get_aws_metadata(headers, provider=None):
             del headers[hkey]
     return metadata
 
+
 def retry_url(url, retry_on_404=True, num_retries=10):
+    """
+    Retry a url.  This is specifically used for accessing the metadata
+    service on an instance.  Since this address should never be proxied
+    (for security reasons), we create a ProxyHandler with a NULL
+    dictionary to override any proxy settings in the environment.
+    """
     for i in range(0, num_retries):
         try:
+            proxy_handler = urllib2.ProxyHandler({})
+            opener = urllib2.build_opener(proxy_handler)
             req = urllib2.Request(url)
+            r = opener.open(req)
+            result = r.read()
             resp = urllib2.urlopen(req)
             return resp.read()
         except urllib2.HTTPError, e:
@@ -195,51 +221,92 @@ def retry_url(url, retry_on_404=True, num_retries=10):
         except Exception, e:
             pass
         boto.log.exception('Caught exception reading instance data')
-        time.sleep(2**i)
+        time.sleep(2 ** i)
     boto.log.error('Unable to read instance data, giving up')
     return ''
 
-def _get_iam_instance_metadata(url, num_retries):
-    d = {}
-    # get info first
-    data = retry_url(url + 'info', num_retries=num_retries)
-    d['info'] = json.loads(data)
-    d['security-credentials'] = {}
-    cred_name = retry_url(url + 'security-credentials',
-                          num_retries=num_retries)
-    data = retry_url(url + 'security-credentials' + '/' + cred_name,
-                     num_retries=num_retries)
-    d['security-credentials'][cred_name] = json.loads(data)
-    return d
 
 def _get_instance_metadata(url, num_retries):
-    d = {}
-    data = retry_url(url, num_retries=num_retries)
-    if data:
-        fields = data.split('\n')
-        for field in fields:
-            if field == 'iam/':
-                d[field[0:-1]] = _get_iam_instance_metadata(url + field,
-                                                            num_retries=num_retries)
-            elif field.endswith('/'):
-                d[field[0:-1]] = _get_instance_metadata(url + field,
-                                                        num_retries=num_retries)
-            else:
-                p = field.find('=')
-                if p > 0:
-                    key = field[p+1:]
-                    resource = field[0:p] + '/openssh-key'
+    return LazyLoadMetadata(url, num_retries)
+
+
+class LazyLoadMetadata(dict):
+    def __init__(self, url, num_retries):
+        self._url = url
+        self._num_retries = num_retries
+        self._leaves = {}
+        self._dicts = []
+        data = boto.utils.retry_url(self._url, num_retries=self._num_retries)
+        if data:
+            fields = data.split('\n')
+            for field in fields:
+                if field.endswith('/'):
+                    key = field[0:-1]
+                    self._dicts.append(key)
                 else:
-                    key = resource = field
-                val = retry_url(url + resource, num_retries=num_retries)
-                if val[0] == '{':
-                    val = json.loads(val)
-                else:
-                    p = val.find('\n')
+                    p = field.find('=')
                     if p > 0:
-                        val = val.split('\n')
-                d[key] = val
-    return d
+                        key = field[p + 1:]
+                        resource = field[0:p] + '/openssh-key'
+                    else:
+                        key = resource = field
+                    self._leaves[key] = resource
+                self[key] = None
+
+    def _materialize(self):
+        for key in self:
+            self[key]
+
+    def __getitem__(self, key):
+        if key not in self:
+            # allow dict to throw the KeyError
+            return super(LazyLoadMetadata, self).__getitem__(key)
+
+        # already loaded
+        val = super(LazyLoadMetadata, self).__getitem__(key)
+        if val is not None:
+            return val
+
+        if key in self._leaves:
+            resource = self._leaves[key]
+            val = boto.utils.retry_url(self._url + urllib.quote(resource,
+                                                                safe="/:"),
+                                       num_retries=self._num_retries)
+            if val and val[0] == '{':
+                val = json.loads(val)
+            else:
+                p = val.find('\n')
+                if p > 0:
+                    val = val.split('\n')
+            self[key] = val
+        elif key in self._dicts:
+            self[key] = LazyLoadMetadata(self._url + key + '/',
+                                         self._num_retries)
+
+        return super(LazyLoadMetadata, self).__getitem__(key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def values(self):
+        self._materialize()
+        return super(LazyLoadMetadata, self).values()
+
+    def items(self):
+        self._materialize()
+        return super(LazyLoadMetadata, self).items()
+
+    def __str__(self):
+        self._materialize()
+        return super(LazyLoadMetadata, self).__str__()
+
+    def __repr__(self):
+        self._materialize()
+        return super(LazyLoadMetadata, self).__repr__()
+
 
 def get_instance_metadata(version='latest', url='http://169.254.169.254',
                           timeout=None, num_retries=5):
@@ -266,6 +333,34 @@ def get_instance_metadata(version='latest', url='http://169.254.169.254',
         if timeout is not None:
             socket.setdefaulttimeout(original)
 
+
+def get_instance_identity(version='latest', url='http://169.254.169.254',
+                          timeout=None, num_retries=5):
+    """
+    Returns the instance identity as a nested Python dictionary.
+    """
+    iid = {}
+    base_url = 'http://169.254.169.254/latest/dynamic/instance-identity'
+    if timeout is not None:
+        original = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(timeout)
+    try:
+        data = retry_url(base_url, num_retries=num_retries)
+        fields = data.split('\n')
+        for field in fields:
+            val = retry_url(base_url + '/' + field + '/')
+            if val[0] == '{':
+                val = json.loads(val)
+            if field:
+                iid[field] = val
+        return iid
+    except urllib2.URLError, e:
+        return None
+    finally:
+        if timeout is not None:
+            socket.setdefaulttimeout(original)
+
+
 def get_instance_userdata(version='latest', sep=None,
                           url='http://169.254.169.254'):
     ud_url = '%s/%s/user-data' % (url, version)
@@ -282,10 +377,12 @@ def get_instance_userdata(version='latest', sep=None,
 ISO8601 = '%Y-%m-%dT%H:%M:%SZ'
 ISO8601_MS = '%Y-%m-%dT%H:%M:%S.%fZ'
 
+
 def get_ts(ts=None):
     if not ts:
         ts = time.gmtime()
     return time.strftime(ISO8601, ts)
+
 
 def parse_ts(ts):
     ts = ts.strip()
@@ -295,6 +392,7 @@ def parse_ts(ts):
     except ValueError:
         dt = datetime.datetime.strptime(ts, ISO8601_MS)
         return dt
+
 
 def find_class(module_name, class_name=None):
     if class_name:
@@ -312,6 +410,7 @@ def find_class(module_name, class_name=None):
     except:
         return None
 
+
 def update_dme(username, password, dme_id, ip_address):
     """
     Update your Dynamic DNS record with DNSMadeEasy.com
@@ -320,6 +419,7 @@ def update_dme(username, password, dme_id, ip_address):
     dme_url += '?username=%s&password=%s&id=%s&ip=%s'
     s = urllib2.urlopen(dme_url % (username, password, dme_id, ip_address))
     return s.read()
+
 
 def fetch_file(uri, file=None, username=None, password=None):
     """
@@ -334,7 +434,8 @@ def fetch_file(uri, file=None, username=None, password=None):
     try:
         if uri.startswith('s3://'):
             bucket_name, key_name = uri[len('s3://'):].split('/', 1)
-            c = boto.connect_s3(aws_access_key_id=username, aws_secret_access_key=password)
+            c = boto.connect_s3(aws_access_key_id=username,
+                                aws_secret_access_key=password)
             bucket = c.get_bucket(bucket_name)
             key = bucket.get_key(key_name)
             key.get_contents_to_file(file)
@@ -354,20 +455,23 @@ def fetch_file(uri, file=None, username=None, password=None):
         file = None
     return file
 
+
 class ShellCommand(object):
 
-    def __init__(self, command, wait=True, fail_fast=False, cwd = None):
+    def __init__(self, command, wait=True, fail_fast=False, cwd=None):
         self.exit_code = 0
         self.command = command
         self.log_fp = StringIO.StringIO()
         self.wait = wait
         self.fail_fast = fail_fast
-        self.run(cwd = cwd)
+        self.run(cwd=cwd)
 
     def run(self, cwd=None):
         boto.log.info('running:%s' % self.command)
-        self.process = subprocess.Popen(self.command, shell=True, stdin=subprocess.PIPE,
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        self.process = subprocess.Popen(self.command, shell=True,
+                                        stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
                                         cwd=cwd)
         if(self.wait):
             while self.process.poll() == None:
@@ -396,6 +500,7 @@ class ShellCommand(object):
 
     output = property(getOutput, setReadOnly, None, 'The STDIN and STDERR output of the command')
 
+
 class AuthSMTPHandler(logging.handlers.SMTPHandler):
     """
     This class extends the SMTPHandler in the standard Python logging module
@@ -410,14 +515,16 @@ class AuthSMTPHandler(logging.handlers.SMTPHandler):
     args=('localhost', 'username', 'password', 'from@abc', ['user1@abc', 'user2@xyz'], 'Logger Subject')
     """
 
-    def __init__(self, mailhost, username, password, fromaddr, toaddrs, subject):
+    def __init__(self, mailhost, username, password,
+                 fromaddr, toaddrs, subject):
         """
         Initialize the handler.
 
         We have extended the constructor to accept a username/password
         for SMTP authentication.
         """
-        logging.handlers.SMTPHandler.__init__(self, mailhost, fromaddr, toaddrs, subject)
+        logging.handlers.SMTPHandler.__init__(self, mailhost, fromaddr,
+                                              toaddrs, subject)
         self.username = username
         self.password = password
 
@@ -440,13 +547,14 @@ class AuthSMTPHandler(logging.handlers.SMTPHandler):
                             self.fromaddr,
                             ','.join(self.toaddrs),
                             self.getSubject(record),
-                            formatdate(), msg)
+                            email.utils.formatdate(), msg)
             smtp.sendmail(self.fromaddr, self.toaddrs, msg)
             smtp.quit()
         except (KeyboardInterrupt, SystemExit):
             raise
         except:
             self.handleError(record)
+
 
 class LRUCache(dict):
     """A dictionary-like object that stores only a certain number of items, and
@@ -481,11 +589,9 @@ class LRUCache(dict):
     C
 
     This code is based on the LRUCache class from Genshi which is based on
-    Mighty's LRUCache from ``myghtyutils.util``, written
-    by Mike Bayer and released under the MIT license (Genshi uses the
-    BSD License). See:
-
-      http://svn.myghty.org/myghtyutils/trunk/lib/myghtyutils/util.py
+    `Myghty <http://www.myghty.org>`_'s LRUCache from ``myghtyutils.util``,
+    written by Mike Bayer and released under the MIT license (Genshi uses the
+    BSD License).
     """
 
     class _Item(object):
@@ -493,6 +599,7 @@ class LRUCache(dict):
             self.previous = self.next = None
             self.key = key
             self.value = value
+
         def __repr__(self):
             return repr(self.value)
 
@@ -567,15 +674,18 @@ class LRUCache(dict):
         item.next = self.head
         self.head.previous = self.head = item
 
+
 class Password(object):
     """
     Password object that stores itself as hashed.
     Hash defaults to SHA512 if available, MD5 otherwise.
     """
-    hashfunc=_hashfn
+    hashfunc = _hashfn
+
     def __init__(self, str=None, hashfunc=None):
         """
-        Load the string from an initial value, this should be the raw hashed password.
+        Load the string from an initial value, this should be the
+        raw hashed password.
         """
         self.str = str
         if hashfunc:
@@ -598,7 +708,9 @@ class Password(object):
         else:
             return 0
 
-def notify(subject, body=None, html_body=None, to_string=None, attachments=None, append_instance_id=True):
+
+def notify(subject, body=None, html_body=None, to_string=None,
+           attachments=None, append_instance_id=True):
     attachments = attachments or []
     if append_instance_id:
         subject = "[%s] %s" % (boto.config.get_value("Instance", "instance-id"), subject)
@@ -607,20 +719,20 @@ def notify(subject, body=None, html_body=None, to_string=None, attachments=None,
     if to_string:
         try:
             from_string = boto.config.get_value('Notification', 'smtp_from', 'boto')
-            msg = MIMEMultipart()
+            msg = email.mime.multipart.MIMEMultipart()
             msg['From'] = from_string
             msg['Reply-To'] = from_string
             msg['To'] = to_string
-            msg['Date'] = formatdate(localtime=True)
+            msg['Date'] = email.utils.formatdate(localtime=True)
             msg['Subject'] = subject
 
             if body:
-                msg.attach(MIMEText(body))
+                msg.attach(email.mime.text.MIMEText(body))
 
             if html_body:
-                part = MIMEBase('text', 'html')
+                part = email.mime.base.MIMEBase('text', 'html')
                 part.set_payload(html_body)
-                Encoders.encode_base64(part)
+                email.encoders.encode_base64(part)
                 msg.attach(part)
 
             for part in attachments:
@@ -648,6 +760,7 @@ def notify(subject, body=None, html_body=None, to_string=None, attachments=None,
         except:
             boto.log.exception('notify failed')
 
+
 def get_utf8_value(value):
     if not isinstance(value, str) and not isinstance(value, unicode):
         value = str(value)
@@ -655,6 +768,7 @@ def get_utf8_value(value):
         return value.encode('utf-8')
     else:
         return value
+
 
 def mklist(value):
     if not isinstance(value, list):
@@ -664,16 +778,24 @@ def mklist(value):
             value = [value]
     return value
 
-def pythonize_name(name, sep='_'):
-    s = ''
-    if name[0].isupper:
-        s = name[0].lower()
-    for c in name[1:]:
-        if c.isupper():
-            s += sep + c.lower()
-        else:
-            s += c
-    return s
+
+def pythonize_name(name):
+    """Convert camel case to a "pythonic" name.
+
+    Examples::
+
+        pythonize_name('CamelCase') -> 'camel_case'
+        pythonize_name('already_pythonized') -> 'already_pythonized'
+        pythonize_name('HTTPRequest') -> 'http_request'
+        pythonize_name('HTTPStatus200Ok') -> 'http_status_200_ok'
+        pythonize_name('UPPER') -> 'upper'
+        pythonize_name('') -> ''
+
+    """
+    s1 = _first_cap_regex.sub(r'\1_\2', name)
+    s2 = _number_cap_regex.sub(r'\1_\2', s1)
+    return _end_cap_regex.sub(r'\1_\2', s2).lower()
+
 
 def write_mime_multipart(content, compress=False, deftype='text/plain', delimiter=':'):
     """Description:
@@ -693,17 +815,17 @@ def write_mime_multipart(content, compress=False, deftype='text/plain', delimite
     :return: Final mime multipart
     :rtype: str:
     """
-    wrapper = MIMEMultipart()
+    wrapper = email.mime.multipart.MIMEMultipart()
     for name, con in content:
         definite_type = guess_mime_type(con, deftype)
         maintype, subtype = definite_type.split('/', 1)
         if maintype == 'text':
-            mime_con = MIMEText(con, _subtype=subtype)
+            mime_con = email.mime.text.MIMEText(con, _subtype=subtype)
         else:
-            mime_con = MIMEBase(maintype, subtype)
+            mime_con = email.mime.base.MIMEBase(maintype, subtype)
             mime_con.set_payload(con)
             # Encode the payload using Base64
-            Encoders.encode_base64(mime_con)
+            email.encoders.encode_base64(mime_con)
         mime_con.add_header('Content-Disposition', 'attachment', filename=name)
         wrapper.attach(mime_con)
     rcontent = wrapper.as_string()
@@ -719,6 +841,7 @@ def write_mime_multipart(content, compress=False, deftype='text/plain', delimite
 
     return rcontent
 
+
 def guess_mime_type(content, deftype):
     """Description: Guess the mime type of a block of text
     :param content: content we're finding the type of
@@ -731,13 +854,13 @@ def guess_mime_type(content, deftype):
     :return: <description>
     """
     #Mappings recognized by cloudinit
-    starts_with_mappings={
-        '#include' : 'text/x-include-url',
-        '#!' : 'text/x-shellscript',
-        '#cloud-config' : 'text/cloud-config',
-        '#upstart-job'  : 'text/upstart-job',
-        '#part-handler' : 'text/part-handler',
-        '#cloud-boothook' : 'text/cloud-boothook'
+    starts_with_mappings = {
+        '#include': 'text/x-include-url',
+        '#!': 'text/x-shellscript',
+        '#cloud-config': 'text/cloud-config',
+        '#upstart-job': 'text/upstart-job',
+        '#part-handler': 'text/part-handler',
+        '#cloud-boothook': 'text/cloud-boothook'
     }
     rtype = deftype
     for possible_type, mimetype in starts_with_mappings.items():
@@ -745,6 +868,7 @@ def guess_mime_type(content, deftype):
             rtype = mimetype
             break
     return(rtype)
+
 
 def compute_md5(fp, buf_size=8192, size=None):
     """
@@ -771,14 +895,18 @@ def compute_md5(fp, buf_size=8192, size=None):
              plain digest as the second element and the data size as
              the third element.
     """
-    m = md5()
+    return compute_hash(fp, buf_size, size, hash_algorithm=md5)
+
+
+def compute_hash(fp, buf_size=8192, size=None, hash_algorithm=md5):
+    hash_obj = hash_algorithm()
     spos = fp.tell()
     if size and size < buf_size:
         s = fp.read(size)
     else:
         s = fp.read(buf_size)
     while s:
-        m.update(s)
+        hash_obj.update(s)
         if size:
             size -= len(s)
             if size <= 0:
@@ -787,11 +915,11 @@ def compute_md5(fp, buf_size=8192, size=None):
             s = fp.read(size)
         else:
             s = fp.read(buf_size)
-    hex_md5 = m.hexdigest()
-    base64md5 = base64.encodestring(m.digest())
-    if base64md5[-1] == '\n':
-        base64md5 = base64md5[0:-1]
+    hex_digest = hash_obj.hexdigest()
+    base64_digest = base64.encodestring(hash_obj.digest())
+    if base64_digest[-1] == '\n':
+        base64_digest = base64_digest[0:-1]
     # data_size based on bytes read.
     data_size = fp.tell() - spos
     fp.seek(spos)
-    return (hex_md5, base64md5, data_size)
+    return (hex_digest, base64_digest, data_size)

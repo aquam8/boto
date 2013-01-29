@@ -1,4 +1,6 @@
-# Copyright (c) 2006-2011 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2006-2012 Mitch Garnaat http://garnaat.org/
+# Copyright (c) 2012 Amazon.com, Inc. or its affiliates.
+# All Rights Reserved
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the
@@ -25,9 +27,10 @@ load balancing service from AWS.
 """
 from boto.connection import AWSQueryConnection
 from boto.ec2.instanceinfo import InstanceInfo
-from boto.ec2.elb.loadbalancer import LoadBalancer
+from boto.ec2.elb.loadbalancer import LoadBalancer, LoadBalancerZones
 from boto.ec2.elb.instancestate import InstanceState
 from boto.ec2.elb.healthcheck import HealthCheck
+from boto.ec2.elb.listelement import ListElement
 from boto.regioninfo import RegionInfo
 import boto
 
@@ -38,12 +41,14 @@ RegionData = {
     'sa-east-1': 'elasticloadbalancing.sa-east-1.amazonaws.com',
     'eu-west-1': 'elasticloadbalancing.eu-west-1.amazonaws.com',
     'ap-northeast-1': 'elasticloadbalancing.ap-northeast-1.amazonaws.com',
-    'ap-southeast-1': 'elasticloadbalancing.ap-southeast-1.amazonaws.com'}
+    'ap-southeast-1': 'elasticloadbalancing.ap-southeast-1.amazonaws.com',
+    'ap-southeast-2': 'elasticloadbalancing.ap-southeast-2.amazonaws.com',
+}
 
 
 def regions():
     """
-    Get all available regions for the SDB service.
+    Get all available regions for the ELB service.
 
     :rtype: list
     :return: A list of :class:`boto.RegionInfo` instances
@@ -76,16 +81,16 @@ def connect_to_region(region_name, **kw_params):
 
 class ELBConnection(AWSQueryConnection):
 
-    APIVersion = boto.config.get('Boto', 'elb_version', '2011-11-15')
+    APIVersion = boto.config.get('Boto', 'elb_version', '2012-06-01')
     DefaultRegionName = boto.config.get('Boto', 'elb_region_name', 'us-east-1')
     DefaultRegionEndpoint = boto.config.get('Boto', 'elb_region_endpoint',
-                                            'elasticloadbalancing.amazonaws.com')
+                                            'elasticloadbalancing.us-east-1.amazonaws.com')
 
     def __init__(self, aws_access_key_id=None, aws_secret_access_key=None,
                  is_secure=False, port=None, proxy=None, proxy_port=None,
                  proxy_user=None, proxy_pass=None, debug=0,
                  https_connection_factory=None, region=None, path='/',
-                 security_token=None):
+                 security_token=None, validate_certs=True):
         """
         Init method to create a new connection to EC2 Load Balancing Service.
 
@@ -102,7 +107,8 @@ class ELBConnection(AWSQueryConnection):
                                     proxy_user, proxy_pass,
                                     self.region.endpoint, debug,
                                     https_connection_factory, path,
-                                    security_token)
+                                    security_token,
+                                    validate_certs=validate_certs)
 
     def _required_auth_capability(self):
         return ['ec2']
@@ -177,9 +183,11 @@ class ELBConnection(AWSQueryConnection):
             to an Amazon VPC.
 
         :rtype: :class:`boto.ec2.elb.loadbalancer.LoadBalancer`
-        :return: The newly created :class:`boto.ec2.elb.loadbalancer.LoadBalancer`
+        :return: The newly created
+            :class:`boto.ec2.elb.loadbalancer.LoadBalancer`
         """
-        params = {'LoadBalancerName': name}
+        params = {'LoadBalancerName': name,
+                  'Scheme': scheme}
         for index, listener in enumerate(listeners):
             i = index + 1
             protocol = listener[2].upper()
@@ -285,8 +293,9 @@ class ELBConnection(AWSQueryConnection):
         params = {'LoadBalancerName': load_balancer_name}
         self.build_list_params(params, zones_to_add,
                                'AvailabilityZones.member.%d')
-        return self.get_list('EnableAvailabilityZonesForLoadBalancer',
-                             params, None)
+        obj = self.get_object('EnableAvailabilityZonesForLoadBalancer',
+                               params, LoadBalancerZones)
+        return obj.zones
 
     def disable_availability_zones(self, load_balancer_name, zones_to_remove):
         """
@@ -309,8 +318,9 @@ class ELBConnection(AWSQueryConnection):
         params = {'LoadBalancerName': load_balancer_name}
         self.build_list_params(params, zones_to_remove,
                                'AvailabilityZones.member.%d')
-        return self.get_list('DisableAvailabilityZonesForLoadBalancer',
-                             params, None)
+        obj = self.get_object('DisableAvailabilityZonesForLoadBalancer',
+                               params, LoadBalancerZones)
+        return obj.zones
 
     def register_instances(self, load_balancer_name, instances):
         """
@@ -449,10 +459,13 @@ class ELBConnection(AWSQueryConnection):
         from the same user to that server. The validity of the cookie is based
         on the cookie expiration time, which is specified in the policy
         configuration.
+
+        None may be passed for cookie_expiration_period.
         """
-        params = {'CookieExpirationPeriod': cookie_expiration_period,
-                  'LoadBalancerName': lb_name,
+        params = {'LoadBalancerName': lb_name,
                   'PolicyName': policy_name}
+        if cookie_expiration_period is not None:
+            params['CookieExpirationPeriod'] = cookie_expiration_period
         return self.get_status('CreateLBCookieStickinessPolicy', params)
 
     def delete_lb_policy(self, lb_name, policy_name):
